@@ -9,6 +9,11 @@ import pprint
 import datetime
 import time
 import json
+import util.trade_logger as loggers
+import policy.policy as po
+from systemconfig import sysconst as sc
+import util.dt as dt
+
 '''
 simulator
 '''
@@ -20,29 +25,7 @@ barS = '********************************************'
 class TradeCoin:
     @staticmethod
     def helloWorld():
-        client = TradeCoin.getClient()
         print (" -- Hellow User :")
-        print(client)
-        pprint.pprint(TradeCoin.get_currencies(client))
-        unit = 6
-        ten_min = datetime.timedelta(minutes=10)
-        now = datetime.datetime.now()
-        start = now - ten_min
-        hr = TradeCoin.get_historic_rates(client, start, now, unit)
-        pprint.pprint(hr)
-
-        pprint.pprint(bar1)
-        orderbook = client.get_product_order_book('BTC-USD', level=10)
-        pprint.pprint(orderbook)
-        pprint.pprint(bar1)
-        pprint.pprint(client.get_product_24hr_stats('BTC-USD'))
-
-        pprint.pprint(barS)
-
-        auth_client = gdax.AuthenticatedClient(key, b64s, pf, api_url="https://api.gdax.com")
-        accounts = auth_client.get_accounts()
-        for a in accounts:
-            pprint.pprint(a)
 
     @staticmethod
     def getClient():
@@ -67,25 +50,119 @@ class TradeCoin:
         r = client.get_product_historic_rates('BTC-USD', start=start, end=end, granularity=granularity)
         assert type(r) is list
         return r
+
     @staticmethod
-    def apply_trading():
+    def apply_trading(round=10):
+        auth_client = TradeCoin.get_auth_client()
+        policy = po.BltPolicy(sc.CONFIG_HOME+"/bltp.json", auth_client)
+        trader = Trader(policy)
+        trader.get_all_balance()
+
+        product_id = 'BTC-USD'
+        strline = 'start a new trade for product {}, with round {} '.format(product_id, round)
+        loggers.general_logger.info(strline)
+        loggers.summary_logger.info(strline)
+        total_profit=0.0
+
+        unsold_order=[]
+        total_unsold_price=0.0
+
+        cancelled_buy = 0
+        cancelled_sell = 0
+
+        cur_round  = 0
+        while cur_round < round:
+            loggers.general_logger.info('round {:d}/{:d}'.format(cur_round, round))
+            price = trader.get_current_price(product_id)
+            buy_order = trader.get_buy_order(product_id)
+
+
+            if  dt.is_skip_order(buy_order):
+                loggers.general_logger.info('cur price={}, SKIP'.format(price))
+                continue
+
+            pprint.pprint(buy_order)
+            sell_order = trader.get_sell_order(buy_order)
+            buy_price = float(buy_order["price"])
+            sell_price = float(sell_order["price"])
+            target_profit=sell_price-buy_price
+
+            # wait for buy order to be filled
+            result = TradeCoin.wait_order_to_fill(trader,buy_order,10)
+            if result == sc.ORDER_EXPIRED:
+                trader.cancel_order(buy_order)
+                cancelled_buy += 1
+                trader.cancel_order(sell_order)
+                continue
+
+            trader.simulate_fill_order(buy_order)
+            # wait for sell order to be filled
+            result = TradeCoin.wait_order_to_fill(trader,sell_order,10)
+            if result == sc.ORDER_EXPIRED:
+                unsold_order.append(buy_order)
+                total_unsold_price += buy_price
+                trader.cancel_order(sell_order)
+                cancelled_sell += 1
+                continue
+
+            # now we finish a whole round 
+            trader.simulate_fill_order(sell_order)
+            total_profit += target_profit
+            loggers.general_logger.info('round {} done, cur price={:18.2f}, {} order price ={:18.2f} filled, get profit {:18.2f}, total profit ={:18.2f}, total unsold ={:18.2f}'.format(cur_round, price, sell_order["type"], sell_order["price"], target_profit, total_profit, total_unsold_price))
+            cur_round+=1
+
+        count_of_unsold = len(total_unsold_price)
+        loggers.general_logger.info('all round done, total profit {:18.2f}, with {d} unsold, with total value {:18.2f}, cancelled_buy {}, cancel_sell {} '.format(total_profit, count_of_unsold, total_unsold_price, cancelled_buy, cancelled_sell))
+
+    @staticmethod
+    def wait_order_to_fill(trader, order,check_interval_sec):
+        sec_to_wait = int(order.get('ttl_sec', 3600))
+        while  sec_to_wait>0:
+            price = trader.get_current_price(order["product_id"])
+            order_price = float(order["price"])
+
+            if trader.is_order_filled(order):
+                loggers.general_logger.info('cur price={:18.2f}, {} order price ={:18.2f} filled'.format(price, order["type"], order_price))
+                return sc.ORDER_ACCEPTED
+            sec_to_wait -= check_interval_sec
+            time.sleep(check_interval_sec)
+            loggers.general_logger.info('cur price={:18.2f}, {} order price ={:18.2f} not filled, waiting for another {:d}'.format(price, order["type"], order_price, sec_to_wait))
+        return sc.ORDER_EXPIRED
+
+
+
+    @staticmethod
+    def get_auth_client():
         config = json.loads(open('priv/cred.json').read())
         key = config["key"]
         pf = config["pf"]
         se = config["se"]
         api_url = config["api_url"]
-        auth_client = gdax.AuthenticatedClient(key, se, pf, api_url=api_url)
-        trader = Trader(auth_client)
-        trader.get_all_balance()
+        return gdax.AuthenticatedClient(key, se, pf, api_url=api_url)
+
 
 
 class Trader:
-    def __init__(self, client):
-        self.client = client
+    def __init__(self, policy):
+        self.policy = policy
+        self.client = policy.get_client()
 
     def get_all_balance(self):
         accounts = self.client.get_accounts()
-        now = self.client.get_time()
+        #now = self.client.get_time()
+        #start = now - datetime.timedelta(seconds=15)
+        now = datetime.datetime.now()
+        start = now - datetime.timedelta(seconds=45)
+
+        pprint.pprint(now)
+        pprint.pprint(start)
+
+
+        hist = self.client.get_product_historic_rates('BTC-USD', start=start, end=now, granularity="15")
+
+        for d in hist:
+            pprint.pprint(d)
+
         total_balance=0.0
         for a in accounts:
             currency = a["currency"]
@@ -97,8 +174,12 @@ class Trader:
                 rate = float(tick["price"])
             usd_balance = balance*rate
             total_balance += usd_balance
-            print("%s,%s,%.4f,%.2f,%.2f"%(now["iso"], currency, balance, rate, usd_balance))
-        print("total(usd):%.2f"%total_balance)
+            line_str = '{},{:>8},{:15.4f},{:18.2f},{:18.2f}'.format(now, currency, balance, rate, usd_balance)
+            #print("%s,%s,%.4f,%.2f,%.2f"%(now["iso"], currency, balance, rate, usd_balance))
+            loggers.general_logger.info(line_str)
+        line_str ='{:10} : {:18.2f}'.format('total(usd)',total_balance)
+        loggers.general_logger.info(line_str)
+        return total_balance
         #buy_order = self.buy('100.0', '0.01', 'BTC-USD')
         #sell_order = self.sell('10000000.0', '0.01', 'BTC-USD')
         #pprint.pprint(buy_order)
@@ -113,6 +194,9 @@ class Trader:
                product_id=product_id)
         return res["id"]
 
+    def get_buy_order(self, product_id):
+        return self.policy.get_buy_order(product_id)
+
 
     def sell(self,price,size,product_id):
         res = self.client.sell(price=price, #USD
@@ -121,10 +205,23 @@ class Trader:
                product_id=product_id)
         return res["id"]
 
-    def cancel_order(self, order_id):
-        res = self.client.cancel_order(order_id)
-        pprint.pprint(res)
+    def get_sell_order(self, buy_order):
+        return self.policy.get_sell_order(buy_order)
+
+    def cancel_order(self, order):
+        #res = self.client.cancel_order(order_id)
+        return self.policy.cancel_order(order)
+
+    def get_current_price(self, product_id):
+        return dt.get_current_price(self.client, product_id)
+
+    def simulate_fill_order(self, order):
+        self.policy.simulate_fill_order(order)
+
+    def is_order_filled(self, order):
+        return self.policy.is_order_filled(order)
+
 
 
 if __name__ == "__main__":
-	_ = TradeCoin.apply_trading()
+	_ = TradeCoin.apply_trading(10)

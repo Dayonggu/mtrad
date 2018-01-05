@@ -4,10 +4,11 @@ from systemconfig import sysconst as sc
 
 general_log_format = "%(asctime)s|%(levelname)s|%(filename)s|%(funcName)s|%(lineno)d|%(message)s"
 summary_log_format = "%(asctime)s|%(levelname)s|%(message)s"
+total_log_format = "%(asctime)s|%(levelname)s|%(message)s"
 
 def setup_logger(name, file, formatter, level=logging.INFO):
     logger = logging.getLogger(name)
-    fileHandler = logging.FileHandler(file, mode="aw")
+    fileHandler = logging.FileHandler(file, mode="w")
     fileHandler.setFormatter(formatter)
     logger.setLevel(level)
     logger.addHandler(fileHandler)

@@ -62,7 +62,8 @@ class TradeCoin:
         strline = 'start a new trade for product {}, with round {} '.format(product_id, round)
         loggers.general_logger.info(strline)
         loggers.summary_logger.info(strline)
-        total_profit=0.0
+        cash_balance=0.0
+        total_coin_size = 0.0
 
         unsold_order=[]
         total_unsold_price=0.0
@@ -71,63 +72,71 @@ class TradeCoin:
         cancelled_sell = 0
 
         cur_round  = 0
+        #buy_order = trader.get_buy_order(product_id)
+
         while cur_round < round:
             loggers.general_logger.info('round {:d}/{:d}'.format(cur_round, round))
-            price = trader.get_current_price(product_id)
             buy_order = trader.get_buy_order(product_id)
+            filled_order = TradeCoin.wait_orders_to_fill(trader,5)
+            if filled_order is not None:
+                loggers.general_logger.info('***  Fill {} order {} with price {:12.2f}'.format(filled_order['type'], filled_order['id'], filled_order['price']))
+                order_price = float(filled_order["price"])
+                coin_size = float(filled_order["size"])
+                if dt.is_buy_order(filled_order):
+                    total_coin_size += coin_size
+                    cash_balance -= order_price*coin_size
+                    pprint.pprint(bar2)
+                    sell_order = trader.add_sell_order(filled_order)
+                    pprint.pprint(sell_order)
+                    #time.sleep(20) # sleep a while anyway, don't by too eager
+                else:
+                    total_coin_size -= coin_size
+                    cash_balance += order_price*coin_size
+                    cur_price = trader.get_current_price(product_id)
+                    coin_value = total_coin_size*cur_price
+                    log_str = 'Round {} :, {} order {}  {:12.2f} | {:12.2f} filled, cash ={:12.2f}, coins= {:12.2f}, with value {:12.2f}, balance {:12.2f}'.format(cur_round, filled_order["type"], filled_order["id"], filled_order["price"], cur_price, cash_balance, total_coin_size,coin_value, cash_balance+coin_value)
+                    loggers.general_logger.info(log_str)
+                    loggers.summary_logger.info(log_str)
+                    cur_round+=1
+            else:
+                # cancel all buy_orders
+                all_buy_orders = trader.get_all_buy_orders()
+                for buy_order in all_buy_orders:
+                    log_str = 'cancelling {} order {} price {:12.2f}'.format(buy_order['type'], buy_order['id'], float(buy_order['price']))
+                    loggers.general_logger.info(log_str)
+                    loggers.summary_logger.info(log_str)
+                    trader.cancel_order(buy_order)
 
 
-            if  dt.is_skip_order(buy_order):
-                loggers.general_logger.info('cur price={}, SKIP'.format(price))
-                continue
-
-            pprint.pprint(buy_order)
-            sell_order = trader.get_sell_order(buy_order)
-            buy_price = float(buy_order["price"])
-            sell_price = float(sell_order["price"])
-            target_profit=sell_price-buy_price
-
-            # wait for buy order to be filled
-            result = TradeCoin.wait_order_to_fill(trader,buy_order,10)
-            if result == sc.ORDER_EXPIRED:
-                trader.cancel_order(buy_order)
-                cancelled_buy += 1
-                trader.cancel_order(sell_order)
-                continue
-
-            trader.simulate_fill_order(buy_order)
-            # wait for sell order to be filled
-            result = TradeCoin.wait_order_to_fill(trader,sell_order,10)
-            if result == sc.ORDER_EXPIRED:
-                unsold_order.append(buy_order)
-                total_unsold_price += buy_price
-                trader.cancel_order(sell_order)
-                cancelled_sell += 1
-                continue
-
-            # now we finish a whole round 
-            trader.simulate_fill_order(sell_order)
-            total_profit += target_profit
-            loggers.general_logger.info('round {} done, cur price={:18.2f}, {} order price ={:18.2f} filled, get profit {:18.2f}, total profit ={:18.2f}, total unsold ={:18.2f}'.format(cur_round, price, sell_order["type"], sell_order["price"], target_profit, total_profit, total_unsold_price))
-            cur_round+=1
-
-        count_of_unsold = len(total_unsold_price)
-        loggers.general_logger.info('all round done, total profit {:18.2f}, with {d} unsold, with total value {:18.2f}, cancelled_buy {}, cancel_sell {} '.format(total_profit, count_of_unsold, total_unsold_price, cancelled_buy, cancelled_sell))
+        cur_price = trader.get_current_price(product_id)
+        coin_value = total_coin_size*cur_price
+        log_str = 'All round done, cash {:12.2f}, coins= {:10.2f}, with value {:12.2f}, total {:12.2f}'.format(cash_balance, total_coin_size, coin_value, cash_balance+coin_value )
+        loggers.general_logger.info(log_str)
+        loggers.summary_logger.info(log_str)
 
     @staticmethod
-    def wait_order_to_fill(trader, order,check_interval_sec):
-        sec_to_wait = int(order.get('ttl_sec', 3600))
+    def wait_orders_to_fill(trader, check_interval_sec):
+        orders = []
+        orders.extend(trader.get_all_buy_orders())
+        orders.extend(trader.get_all_sell_orders())
+        if (len(orders)<1):
+            return None
+        sec_to_wait = int(orders[0].get('ttl_sec', 3600))
         while  sec_to_wait>0:
-            price = trader.get_current_price(order["product_id"])
-            order_price = float(order["price"])
-
-            if trader.is_order_filled(order):
-                loggers.general_logger.info('cur price={:18.2f}, {} order price ={:18.2f} filled'.format(price, order["type"], order_price))
-                return sc.ORDER_ACCEPTED
+            for order in orders:
+                pprint.pprint(order)
+                price = trader.get_current_price(order["product_id"])
+                order_price = float(order["price"])
+                if trader.is_order_filled(order):
+                    logstr = '{} order {} price ={:12.2f} ({:12.2f}) filled'.format(order["type"], order["id"], order_price, price)
+                    loggers.general_logger.info(logstr)
+                    loggers.summary_logger.info(logstr)
+                    trader.simulate_fill_order(order)
+                    return order
             sec_to_wait -= check_interval_sec
             time.sleep(check_interval_sec)
-            loggers.general_logger.info('cur price={:18.2f}, {} order price ={:18.2f} not filled, waiting for another {:d}'.format(price, order["type"], order_price, sec_to_wait))
-        return sc.ORDER_EXPIRED
+            loggers.general_logger.info('No orders filled at price [{:12.2f}], waiting for another {:d} sec'.format(price, sec_to_wait))
+        return None
 
 
 
@@ -154,16 +163,12 @@ class Trader:
         now = datetime.datetime.now()
         start = now - datetime.timedelta(seconds=45)
 
-        pprint.pprint(now)
-        pprint.pprint(start)
-
-
         hist = self.client.get_product_historic_rates('BTC-USD', start=start, end=now, granularity="15")
 
         for d in hist:
             pprint.pprint(d)
 
-        total_balance=0.0
+        cash_balance=0.0
         for a in accounts:
             currency = a["currency"]
             balance = float(a["balance"])
@@ -173,13 +178,13 @@ class Trader:
                 tick = self.client.get_product_ticker(product)
                 rate = float(tick["price"])
             usd_balance = balance*rate
-            total_balance += usd_balance
-            line_str = '{},{:>8},{:15.4f},{:18.2f},{:18.2f}'.format(now, currency, balance, rate, usd_balance)
+            cash_balance += usd_balance
+            line_str = '{},{:>8},{:12.4f},{:12.2f},{:12.2f}'.format(now, currency, balance, rate, usd_balance)
             #print("%s,%s,%.4f,%.2f,%.2f"%(now["iso"], currency, balance, rate, usd_balance))
             loggers.general_logger.info(line_str)
-        line_str ='{:10} : {:18.2f}'.format('total(usd)',total_balance)
+        line_str ='{:10} : {:12.2f}'.format('total(usd)',cash_balance)
         loggers.general_logger.info(line_str)
-        return total_balance
+        return cash_balance
         #buy_order = self.buy('100.0', '0.01', 'BTC-USD')
         #sell_order = self.sell('10000000.0', '0.01', 'BTC-USD')
         #pprint.pprint(buy_order)
@@ -205,8 +210,8 @@ class Trader:
                product_id=product_id)
         return res["id"]
 
-    def get_sell_order(self, buy_order):
-        return self.policy.get_sell_order(buy_order)
+    def add_sell_order(self, buy_order):
+        return self.policy.add_sell_order(buy_order)
 
     def cancel_order(self, order):
         #res = self.client.cancel_order(order_id)
@@ -221,7 +226,13 @@ class Trader:
     def is_order_filled(self, order):
         return self.policy.is_order_filled(order)
 
+    def get_all_buy_orders(self):
+        return self.policy.get_all_buy_orders()
+
+    def get_all_sell_orders(self):
+        return self.policy.get_all_sell_orders()
+
 
 
 if __name__ == "__main__":
-	_ = TradeCoin.apply_trading(10)
+	_ = TradeCoin.apply_trading(50)

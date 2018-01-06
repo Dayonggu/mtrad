@@ -52,31 +52,36 @@ class TradeCoin:
         return r
 
     @staticmethod
-    def apply_trading(round=10):
-        auth_client = TradeCoin.get_auth_client()
-        policy = po.BltPolicy(sc.CONFIG_HOME+"/bltp.json", auth_client)
-        trader = Trader(policy)
-        trader.get_all_balance()
+    def apply_trading(trader, round=10, product_id = 'BTC-USD'):
 
-        product_id = 'BTC-USD'
-        strline = 'start a new trade for product {}, with round {} '.format(product_id, round)
+        if trader is None:
+            strline = 'trader is not set '
+            loggers.general_logger.error(strline)
+            loggers.summary_logger.error(strline)
+            return
+
+
+        trader.get_all_balance()
+        strline = 'start a new trade for product {}, with policy [{}] for {} rounds'.format(product_id, trader.get_policy_name(), round)
         loggers.general_logger.info(strline)
         loggers.summary_logger.info(strline)
+
+        trader.policy_preparation()
+
         cash_balance=0.0
         total_coin_size = 0.0
-
         unsold_order=[]
         total_unsold_price=0.0
-
         cancelled_buy = 0
         cancelled_sell = 0
-
         cur_round  = 0
         #buy_order = trader.get_buy_order(product_id)
 
         while cur_round < round:
             loggers.general_logger.info('round {:d}/{:d}'.format(cur_round, round))
             buy_order = trader.get_buy_order(product_id)
+            if dt.is_skip_order(buy_order):
+                time.sleep(2)
             filled_order = TradeCoin.wait_orders_to_fill(trader,5)
             if filled_order is not None:
                 loggers.general_logger.info('***  Fill {} order {} with price {:12.2f}'.format(filled_order['type'], filled_order['id'], filled_order['price']))
@@ -113,6 +118,7 @@ class TradeCoin:
         log_str = 'All round done, cash {:12.2f}, coins= {:10.2f}, with value {:12.2f}, total {:12.2f}'.format(cash_balance, total_coin_size, coin_value, cash_balance+coin_value )
         loggers.general_logger.info(log_str)
         loggers.summary_logger.info(log_str)
+        trader.policy_finalize()
 
     @staticmethod
     def wait_orders_to_fill(trader, check_interval_sec):
@@ -126,6 +132,9 @@ class TradeCoin:
             for order in orders:
                 pprint.pprint(order)
                 price = trader.get_current_price(order["product_id"])
+                if price is None:
+                    loggers.general_logger.warn('Cannot get price at this moment')
+                    return None
                 order_price = float(order["price"])
                 if trader.is_order_filled(order):
                     logstr = '{} order {} price ={:12.2f} ({:12.2f}) filled'.format(order["type"], order["id"], order_price, price)
@@ -155,6 +164,9 @@ class Trader:
     def __init__(self, policy):
         self.policy = policy
         self.client = policy.get_client()
+
+    def get_policy_name(self):
+        return self.policy.get_name()
 
     def get_all_balance(self):
         accounts = self.client.get_accounts()
@@ -232,7 +244,33 @@ class Trader:
     def get_all_sell_orders(self):
         return self.policy.get_all_sell_orders()
 
+    def policy_preparation(self):
+        self.policy.preparation()
+
+    def policy_finalize(self):
+        self.policy.finalize()
+
 
 
 if __name__ == "__main__":
-	_ = TradeCoin.apply_trading(50)
+    auth_client = TradeCoin.get_auth_client()
+
+    #_ trade with blt policy
+    #policy = po.BltPolicy(sc.CONFIG_HOME+"/bltp.json", auth_client)
+    #trader = Trader(policy)
+
+    #_ trade with price buffer policy
+    product_id = 'BTC-USD'
+    policy = po.PriceBufferPolicy(sc.CONFIG_HOME+"/spbp.json", auth_client, product_id)
+    trader = Trader(policy)
+
+    TradeCoin.apply_trading(trader, 50, product_id)
+    trader.policy_finalize()
+
+    '''
+    try:
+        TradeCoin.apply_trading(trader, 50, product_id)
+    except:
+        print("exception in main", sys.exc_info()[0])
+        trader.policy_finalize()
+    '''

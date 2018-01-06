@@ -2,10 +2,13 @@ import json,os,sys
 import util.dt as dt
 import uuid
 import datetime
+import time
 import pprint
 import random
 import util.trade_logger as loggers
 from systemconfig import sysconst as sc
+import pricebuffer
+import pricetracker
 
 SKIP_ORDER= {
 "type" : sc.SKIP_ORDER_TYPE,
@@ -18,6 +21,9 @@ class BasePolicy(object):
         self.client = auth_client
         self.buy_orders = []
         self.sell_orders = []
+
+    def get_name(self):
+        return  self.config.get('name', "Unknown")
 
     def get_buy_order(self, product_id):
         if len(self.buy_orders) >= int(self.config.get('max_buy_orders', 3)):
@@ -47,49 +53,6 @@ class BasePolicy(object):
     def get_client(self):
         return self.client
 
-
-
-
-class BltPolicy(BasePolicy):
-    def __init__(self, config_file, client):
-        super(BltPolicy, self).__init__(config_file, client)
-
-    def get_buy_order_by_policy(self, product_id):
-
-        x = random.randint(1, int(self.config.get('max_sell_orders', 3))+1)
-        #add a random number, more cautious where there is a long sell-queue
-        if x<len(self.sell_orders):
-            return SKIP_ORDER
-
-        cur_price = dt.get_current_price(self.client, product_id)
-        if cur_price is None:
-            loggers.general_logger.error('Cannot get tick at this moment')
-            return SKIP_ORDER
-        buy_price = cur_price - float(self.config.get('buy_limit_gap_dollar', '0.5'))
-        order = {}
-        order["type"] = sc.BUY_ORDER_TYPE
-        order["size"] = float(self.config.get('size', '0.0001'))
-        order["price"] = buy_price
-        order["product_id"] = product_id
-        order["ttl_sec"] = int(self.config.get('buy_ttl_sec', '3600'))
-        order["id"] = uuid.uuid4()
-        self.buy_orders.append(order)
-        self.buy_orders.sort(key=lambda x: x["price"], reverse=True)
-        return order
-
-    def get_sell_order_by_policy(self, buy_order):
-        buy_order_price = float(buy_order.get("price", '-0.1'))
-        order = {}
-        order["type"] = sc.SELL_ORDER_TYPE
-        order["size"] = float(buy_order.get("size", '0.0001'))
-        order["price"] = buy_order_price*float(self.config.get("profit_target", '1.0075'))
-        order["product_id"] = buy_order.get("product_id", "BTC-USD")
-        order["ttl_sec"] = int(self.config.get('sell_ttl_sec', '3600'))
-        order["id"] = uuid.uuid4()
-        self.sell_orders.append(order)
-        self.sell_orders.sort(key=lambda x: x["price"], reverse=False)
-        return order
-
     def remove_order(self, order):
         if dt.is_buy_order(order):
             self.buy_orders = list(filter(lambda x: x["id"]!= order["id"], self.buy_orders))
@@ -117,7 +80,7 @@ class BltPolicy(BasePolicy):
         if cur_price is None:
             loggers.general_logger.error('Cannot get tick at this moment')
             return False
-        loggers.general_logger.info('Check {} order {} price {} / ({})'.format(order_type, order_id, order_price, cur_price))
+        loggers.general_logger.info('Check {} order {} price {:8.2f} / ({:8.2f})'.format(order_type, order_id, order_price, cur_price))
 
         if dt.is_buy_order(order):
             return order_price>=cur_price
@@ -125,6 +88,140 @@ class BltPolicy(BasePolicy):
             return order_price<=cur_price
         return False
 
+    def preparation(self):
+        pass
+
+    def finalize(self):
+        pass
+
+
+class PriceBufferPolicy(BasePolicy):
+    def __init__(self, config_file, client, product_id):
+        super(PriceBufferPolicy, self).__init__(config_file, client)
+        self.product_id =product_id
+        self.last_buy_order_price = 0.0;
+        self.buy_to_buy_diff = float(self.config.get('minium_buy_to_buy_diff', '0.01'))
+        self.lower_bound_to_buy_in_price_buffer = float(self.config.get('lower_bound_to_buy_in_price_buffer', '0.2'))
+        self.higher_bound_to_buy_in_price_buffer = float(self.config.get('higher_bound_to_buy_in_price_buffer', '0.95'))
+        self.minium_diff_highest_to_buy = float(self.config.get('minium_diff_highest_to_buy', '0.2'))
+
+
+
+    def preparation(self):
+        self.price_buffer = pricebuffer.PriceBuffer(int(self.config.get('price_buffer_size', '20')))
+        self.price_tracker_thread = pricetracker.PriceTracker(self.price_buffer, self.client, self.product_id, int(self.config.get('price_check_interval_sec', '2')))
+        self.price_tracker_thread.start()
+        maturity = 0.0001
+        mature_thresh = float(self.config.get('price_buffer_mature_thresh', '0.2'))
+        while (maturity < mature_thresh):
+            time.sleep(10)
+            loggers.general_logger.info('price buffer is not ready, please wait: {:5.2f}%'.format(maturity*100.0/mature_thresh))
+            maturity = self.price_buffer.get_buffer_maturity()
+
+
+    def finalize(self):
+        if self.price_tracker_thread.isAlive():
+            self.price_tracker_thread.set_status(sc.PRICE_CHECKER_STOP_STATUS)
+        self.price_tracker_thread.join()
+
+    def in_buy_range(self, cur_price):
+        percentage = self.price_buffer.get_current_price_ranking_perc()
+        if percentage<self.lower_bound_to_buy_in_price_buffer or percentage>self.higher_bound_to_buy_in_price_buffer:
+            loggers.general_logger.info('Current price {:10.2f} percentage in buffer is {:5.2f}, not in range [{},{}], skip'.format(cur_price, percentage, self.lower_bound_to_buy_in_price_buffer, self.higher_bound_to_buy_in_price_buffer))
+            return False
+        return True
+
+
+    def get_buy_order_by_policy(self, product_id):
+        max_sell_queue_size = int(self.config.get('max_sell_orders', 3))
+
+        x = random.randint(1, max_sell_queue_size*max_sell_queue_size+1)
+        #add a random number, more cautious where there is a long sell-queue
+        if x<len(self.sell_orders)*len(self.sell_orders):
+            return SKIP_ORDER
+
+
+        cur_price = dt.get_current_price(self.client, product_id)
+        if cur_price is None:
+            loggers.general_logger.error('Cannot get tick at this moment')
+            return SKIP_ORDER
+        if abs(cur_price-self.last_buy_order_price) < self.buy_to_buy_diff:
+            loggers.general_logger.info('Current price {:10.2f} too close to last order {:10.2f} (must with gap > {:5.2f})'.format(cur_price, self.last_buy_order_price, self.buy_to_buy_diff))
+            return SKIP_ORDER
+
+        latest_price_in_buffer = self.price_buffer.get_latest_price()
+        if abs(cur_price-latest_price_in_buffer) < self.buy_to_buy_diff:
+            if not self.in_buy_range(cur_price):
+                return SKIP_ORDER
+
+        cur_highest = self.price_buffer.get_highest_price_in_buf()
+        if (cur_highest-cur_price) < self.minium_diff_highest_to_buy:
+            loggers.general_logger.info('Current price {:10.2f} too close to cur highest  {:10.2f} (must with gap > {:5.2f})'.format(cur_price, cur_highest, self.minium_diff_highest_to_buy))
+            return SKIP_ORDER
+
+
+
+        buy_price = cur_price - float(self.config.get('buy_limit_gap_dollar', '0.5'))
+        order = dt.create_simu_order(sc.BUY_ORDER_TYPE, float(self.config.get('size', '0.0001')), buy_price, product_id, int(self.config.get('buy_ttl_sec', '3600')))
+        self.buy_orders.append(order)
+        self.buy_orders.sort(key=lambda x: x["price"], reverse=True)
+        self.last_buy_order_price = buy_price
+        return order
+
+    def get_sell_order_by_policy(self, buy_order):
+        buy_order_price = float(buy_order.get("price", '-0.1'))
+        product_id = buy_order.get('product_id', 'BTC-USD')
+        sell_order_price = buy_order_price*float(self.config.get("profit_target", '1.0075'))
+        cur_price = dt.get_current_price(self.client, product_id)
+        if cur_price is None:
+            loggers.general_logger.error('Cannot get tick at this moment')
+            return SKIP_ORDER
+        if (sell_order_price < cur_price):
+            sell_order_price = cur_price+0.05
+        order = dt.create_simu_order(sc.SELL_ORDER_TYPE, float(self.config.get('size', '0.0001')), sell_order_price, buy_order.get("product_id", "BTC-USD"), int(self.config.get('sell_ttl_sec', '3600')))
+        self.sell_orders.append(order)
+        self.sell_orders.sort(key=lambda x: x["price"], reverse=False)
+        return order
+
+
+class BltPolicy(BasePolicy):
+    def __init__(self, config_file, client):
+        super(BltPolicy, self).__init__(config_file, client)
+
+    def get_buy_order_by_policy(self, product_id):
+        x = random.randint(1, int(self.config.get('max_sell_orders', 3))+1)
+        #add a random number, more cautious where there is a long sell-queue
+        if x<len(self.sell_orders):
+            return SKIP_ORDER
+
+        cur_price = dt.get_current_price(self.client, product_id)
+        if cur_price is None:
+            loggers.general_logger.error('Cannot get tick at this moment')
+            return SKIP_ORDER
+        buy_price = cur_price - float(self.config.get('buy_limit_gap_dollar', '0.5'))
+        order = dt.create_simu_order(sc.BUY_ORDER_TYPE, float(self.config.get('size', '0.0001')), buy_price, product_id, int(self.config.get('buy_ttl_sec', '3600')))
+        self.buy_orders.append(order)
+        self.buy_orders.sort(key=lambda x: x["price"], reverse=True)
+        return order
+
+    def get_sell_order_by_policy(self, buy_order):
+        buy_order_price = float(buy_order.get("price", '-0.1'))
+        product_id = buy_order.get('product_id', 'BTC-USD')
+        sell_order_price = buy_order_price*float(self.config.get("profit_target", '1.0075'))
+        cur_price = dt.get_current_price(self.client, product_id)
+        if cur_price is None:
+            loggers.general_logger.error('Cannot get tick at this moment')
+            return False
+        if (sell_order_price < cur_price):
+            sell_order_price = cur_price+0.05
+
+        order = dt.create_simu_order(sc.SELL_ORDER_TYPE, float(self.config.get('size', '0.0001')), sell_order_price, buy_order.get("product_id", "BTC-USD"), int(self.config.get('sell_ttl_sec', '3600')))
+        self.sell_orders.append(order)
+        self.sell_orders.sort(key=lambda x: x["price"], reverse=False)
+        return order
+
+
+'''
     def is_order_filled_old(self, order):
         check_interval_sec = int(self.config.get('check_interval_sec',30))
         product_id = order.get('product_id', 'BTC-USD')
@@ -149,3 +246,4 @@ class BltPolicy(BasePolicy):
         elif dt.is_sell_order(order):
             return price<=high
         return False
+'''

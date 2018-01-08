@@ -25,10 +25,19 @@ def setup_logger(name, file_name, formatter, with_stream=True, level=logging.INF
 
 
 
-setup_logger('general',  sc.LOG_HOME+'/tradelog.txt', logging.Formatter(general_log_format))
-setup_logger('sum', sc.LOG_HOME+'/summarylog.txt', logging.Formatter(summary_log_format))
+setup_logger('general',  sc.LOG_HOME+'/generallog.txt', logging.Formatter(general_log_format))
+setup_logger('sum', sc.LOG_HOME+'/sumlog.txt', logging.Formatter(summary_log_format))
 setup_logger('price_tracker', sc.LOG_HOME+'/price_tracker_log.txt', logging.Formatter(summary_log_format), with_stream=False)
+
+
+setup_logger('trade_detail',  sc.LOG_HOME+'/trade_detail_log.txt', logging.Formatter(general_log_format))
+setup_logger('trade_sum', sc.LOG_HOME+'/trade_sum_log.txt', logging.Formatter(summary_log_format))
+
+
 
 general_logger = logging.getLogger('general')
 summary_logger = logging.getLogger('sum')
 price_tracker_logger = logging.getLogger('price_tracker')
+
+trade_details_logger = logging.getLogger('trade_detail')
+trade_summary_logger = logging.getLogger('trade_sum')

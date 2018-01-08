@@ -23,7 +23,7 @@ class PriceTracker(Thread):
         price = dt.get_current_price(self.client, product_id)
         if price is None:
             return None
-        if abs(price-self.last_price)<0.02:
+        if abs(price-self.last_price)<0.05:
             loggers.price_tracker_logger.info('{}: {:10.2f}, skipped'.format(product_id, price))
             return price
         self.last_price = price

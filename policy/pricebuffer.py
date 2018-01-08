@@ -36,6 +36,12 @@ class PriceBuffer:
             latest_idx = self.size-1
         return latest_idx
 
+    def get_distance_to_h_idx(self):
+        dis = self.cur_idx - self.h_idx
+        if dis<0 :
+            dis += self.size
+        return dis
+
     def get_latest_price(self):
         return self.prices[self.get_latest_idx()]
 
@@ -55,7 +61,7 @@ class PriceBuffer:
             self.prices_diff[i] -= diff_change
         return max_idx
 
-    def get_current_price_ranking_perc(self):
+    def get_current_price_ranking_perc_v1(self):
         latest_idx = self.get_latest_idx()
         if latest_idx == self.h_idx:
             print(' latest_idx {} = self.h_idx {}'.format(latest_idx, self.h_idx))
@@ -75,5 +81,29 @@ class PriceBuffer:
         #print(' latest_idx = {} cv={} h_idx={} hv={} higher_cnt {} total_cnt ={}, r {:5.4f} '.format(latest_idx, self.prices[latest_idx], self.h_idx, self.prices[self.h_idx], higher_cnt, total_cnt, perc))
         return perc
 
+    def get_current_price_ranking_perc(self, cur_price):
+        higher_cnt = 0
+        total_cnt = 0
+        for p in self.prices:
+            if p > cur_price:
+                higher_cnt += 1        
+        perc = (self.size-higher_cnt)*1.0/self.size
+        return perc
+
     def get_buffer_maturity(self):
         return self.total_count*1.0/self.size
+
+    def dump_price_data(self):
+        formatStr = '{:3d},{:8.2f}'
+        idx=0
+        cur_last = self.get_latest_idx()
+        result = 'latest {} highest{}'.format(cur_last, self.h_idx)+'\n'
+        for p in self.prices:
+            result = result+formatStr.format(idx, self.prices[idx])
+            if idx== self.h_idx:
+                result = result+('<--- HIGH ---')
+            if idx== cur_last:
+                result = result+('<--- LATEST ---')
+            idx+=1
+            result = result+'\n'
+        return result

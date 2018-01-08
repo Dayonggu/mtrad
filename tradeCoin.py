@@ -84,7 +84,7 @@ class TradeCoin:
                 time.sleep(2)
             filled_order = TradeCoin.wait_orders_to_fill(trader,5)
             if filled_order is not None:
-                loggers.general_logger.info('***  Fill {} order {} with price {:12.2f}'.format(filled_order['type'], filled_order['id'], filled_order['price']))
+                loggers.general_logger.info('***  Fill {} order {} with price {:12.2f}'.format(filled_order['type'], filled_order['internal_id'], filled_order['price']))
                 order_price = float(filled_order["price"])
                 coin_size = float(filled_order["size"])
                 if dt.is_buy_order(filled_order):
@@ -99,7 +99,7 @@ class TradeCoin:
                     cash_balance += order_price*coin_size
                     cur_price = trader.get_current_price(product_id)
                     coin_value = total_coin_size*cur_price
-                    log_str = 'Round {} :, {} order {}  {:12.2f} | {:12.2f} filled, cash ={:12.2f}, coins= {:12.2f}, with value {:12.2f}, balance {:12.2f}'.format(cur_round, filled_order["type"], filled_order["id"], filled_order["price"], cur_price, cash_balance, total_coin_size,coin_value, cash_balance+coin_value)
+                    log_str = 'Round {} :, {} order {}  {:12.2f} | {:12.2f} filled, cash ={:12.2f}, coins= {:12.2f}, with value {:12.2f}, balance {:12.2f}'.format(cur_round, filled_order["type"], filled_order["internal_id"], filled_order["price"], cur_price, cash_balance, total_coin_size,coin_value, cash_balance+coin_value)
                     loggers.general_logger.info(log_str)
                     loggers.summary_logger.info(log_str)
                     cur_round+=1
@@ -107,7 +107,7 @@ class TradeCoin:
                 # cancel all buy_orders
                 all_buy_orders = trader.get_all_buy_orders()
                 for buy_order in all_buy_orders:
-                    log_str = 'cancelling {} order {} price {:12.2f}'.format(buy_order['type'], buy_order['id'], float(buy_order['price']))
+                    log_str = 'cancelling {} order {} price {:12.2f}'.format(buy_order['type'], buy_order['internal_id'], float(buy_order['price']))
                     loggers.general_logger.info(log_str)
                     loggers.summary_logger.info(log_str)
                     trader.cancel_order(buy_order)
@@ -137,7 +137,7 @@ class TradeCoin:
                     return None
                 order_price = float(order["price"])
                 if trader.is_order_filled(order):
-                    logstr = '{} order {} price ={:12.2f} ({:12.2f}) filled'.format(order["type"], order["id"], order_price, price)
+                    logstr = '{} order {} price ={:12.2f} ({:12.2f}) filled'.format(order["type"], order["internal_id"], order_price, price)
                     loggers.general_logger.info(logstr)
                     loggers.summary_logger.info(logstr)
                     trader.simulate_fill_order(order)
@@ -170,8 +170,8 @@ class Trader:
 
     def get_all_balance(self):
         accounts = self.client.get_accounts()
-        #now = self.client.get_time()
-        #start = now - datetime.timedelta(seconds=15)
+        now = self.client.get_time()
+        start = now - datetime.timedelta(seconds=15)
         now = datetime.datetime.now()
         start = now - datetime.timedelta(seconds=45)
 
@@ -209,7 +209,7 @@ class Trader:
                size=size, #BTC
                order_type='limit',
                product_id=product_id)
-        return res["id"]
+        return res["internal_id"]
 
     def get_buy_order(self, product_id):
         return self.policy.get_buy_order(product_id)
@@ -220,7 +220,7 @@ class Trader:
                size=size, #BTC
                order_type='limit',
                product_id=product_id)
-        return res["id"]
+        return res["internal_id"]
 
     def add_sell_order(self, buy_order):
         return self.policy.add_sell_order(buy_order)
@@ -250,6 +250,10 @@ class Trader:
     def policy_finalize(self):
         self.policy.finalize()
 
+    def get_gdax_existing_orders(self, product_id):
+        res = self.client.get_orders(product_id)
+        return res
+
 
 
 if __name__ == "__main__":
@@ -260,7 +264,7 @@ if __name__ == "__main__":
     #trader = Trader(policy)
 
     #_ trade with price buffer policy
-    product_id = 'BTC-USD'
+    product_id = 'LTC-USD'
     policy = po.PriceBufferPolicy(sc.CONFIG_HOME+"/spbp.json", auth_client, product_id)
     trader = Trader(policy)
 

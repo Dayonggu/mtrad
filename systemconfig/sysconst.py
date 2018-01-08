@@ -11,12 +11,24 @@ SKIP_ORDER_TYPE='SKIP'
 BUY_ORDER_TYPE='BUY'
 SELL_ORDER_TYPE='SELL'
 SKIP_ORDER_ID='00000000skip0000'
+FAILED_TO_FILE_ORDER_ID='00000000faild_to_file0000'
+MISSING_MARKED_ORDER_ID='0000000missing-market0000'
 
 PRICE_CHECKER_RUNNING_STATUS="RUNNING"
 PRICE_CHECKER_STOP_STATUS="STOP"
 
+MARKET_ID='id'
 
 #email
 
-sender = 'skyford2006@hotmail.com'
-receivers = 'skyford2006@hotmail.com'
+EMAIL_SENDER = 'skyford2006@gmail.com'
+EMAIL_RECEIVER = 'skyford2006@hotmail.com'
+EMAIL_SERVER = 'smtp.gmail.com'
+EMAIL_USER='skyford2006@gmail.com'
+
+# format
+ORDER_TIMEFORMAT='%Y-%m-%dT%H:%M:%S.%fZ'
+
+#status on market
+
+ORDER_OPEN = 'open'
